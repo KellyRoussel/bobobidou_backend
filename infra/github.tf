@@ -15,12 +15,21 @@ resource "google_iam_workload_identity_pool_provider" "github" {
   display_name                       = "GitHub"
 
   attribute_mapping = {
-    "google.subject"       = "assertion.sub"
-    "attribute.repository" = "assertion.repository"
-    "attribute.ref"        = "assertion.ref"
+    "google.subject"          = "assertion.sub"
+    "attribute.repository_id" = "assertion.repository_id"
   }
-  # Only the main branch of this repo can get credentials
-  attribute_condition = "assertion.repository == '${var.github_repository}' && assertion.ref == 'refs/heads/main'"
+  # Only the deploy workflow, run from main by a push or by hand, in the
+  # production environment. The repository and its owner are checked by their
+  # ids, which don't change, rather than by their names, which can be taken
+  # over by someone else after a rename
+  attribute_condition = join(" && ", [
+    "assertion.repository_id == '${var.github_repository_id}'",
+    "assertion.repository_owner_id == '${var.github_repository_owner_id}'",
+    "assertion.ref == 'refs/heads/main'",
+    "assertion.workflow_ref == '${var.github_repository}/.github/workflows/deploy.yml@refs/heads/main'",
+    "assertion.event_name in ['push', 'workflow_dispatch']",
+    "assertion.environment == 'production'",
+  ])
 
   oidc {
     issuer_uri = "https://token.actions.githubusercontent.com"
@@ -35,7 +44,7 @@ resource "google_service_account" "deployer" {
 resource "google_service_account_iam_member" "deployer_from_github" {
   service_account_id = google_service_account.deployer.name
   role               = "roles/iam.workloadIdentityUser"
-  member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.repository/${var.github_repository}"
+  member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.repository_id/${var.github_repository_id}"
 }
 
 # What `gcloud run deploy --source` needs: upload the sources, start the build,
@@ -52,15 +61,15 @@ resource "google_project_iam_member" "deployer" {
   member  = google_service_account.deployer.member
 }
 
-# The new revision runs as the backend account, the build as the default Compute account
+# The new revision runs as the backend account, the build as the builder account
 resource "google_service_account_iam_member" "deployer_act_as_backend" {
   service_account_id = google_service_account.backend.name
   role               = "roles/iam.serviceAccountUser"
   member             = google_service_account.deployer.member
 }
 
-resource "google_service_account_iam_member" "deployer_act_as_compute" {
-  service_account_id = "projects/${var.project_id}/serviceAccounts/${data.google_project.this.number}-compute@developer.gserviceaccount.com"
+resource "google_service_account_iam_member" "deployer_act_as_builder" {
+  service_account_id = google_service_account.builder.name
   role               = "roles/iam.serviceAccountUser"
   member             = google_service_account.deployer.member
 }

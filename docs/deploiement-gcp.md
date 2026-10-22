@@ -62,7 +62,7 @@ L'infrastructure est décrite dans [`infra/`](../infra/) :
 - les API du projet ;
 - le compte de service `$SERVICE`, qui n'a accès qu'à ses secrets ;
 - les 4 secrets ;
-- le droit `roles/run.builder` du compte Compute par défaut, qui construit les images ;
+- le compte `bobobidou-builder`, qui construit les images avec le seul rôle `roles/run.builder`. Le compte Compute par défaut n'est pas utilisé : il a `roles/editor` sur le projet, et quiconque lance un build avec un compte en obtient les droits ;
 - le dépôt Artifact Registry `cloud-run-source-deploy`, qui ne garde que les dernières images (0,5 Go gratuits) ;
 - le service Cloud Run : 0 à 2 instances, 1 CPU, 512 Mo, variables et secrets, accès public ;
 - le déploiement depuis GitHub Actions ([`infra/github.tf`](../infra/github.tf), étape 5).
@@ -126,21 +126,36 @@ Le workflow ne lance pas les migrations : lance-les à la main **avant** de merg
 
 ### Une seule fois : relier GitHub au projet
 
-Le workflow se connecte à GCP par Workload Identity Federation : GitHub échange son jeton OIDC contre des identifiants temporaires du compte `github-deployer`. Aucune clé n'est stockée dans GitHub, et seule la branche `main` de ce repo y a accès. Après le `terraform apply`, donne au repo les deux valeurs dont il a besoin. Ce sont des variables, pas des secrets : elles ne donnent aucun accès à elles seules.
+Le workflow se connecte à GCP par Workload Identity Federation : GitHub échange son jeton OIDC contre des identifiants temporaires du compte `github-deployer`. Aucune clé n'est stockée dans GitHub. GCP n'accepte que le jeton du workflow `deploy.yml`, lancé depuis `main` par un push ou à la main, dans l'environnement GitHub `production` ; le repo et son propriétaire sont vérifiés par leurs identifiants numériques, qui ne changent pas même si un nom est repris par quelqu'un d'autre. Le compte `github-deployer` peut seulement déployer.
 
-```bash
-cd infra
-gh variable set GCP_WORKLOAD_IDENTITY_PROVIDER --body "$(terraform output -raw github_workload_identity_provider)"
-gh variable set GCP_DEPLOYER_SERVICE_ACCOUNT --body "$(terraform output -raw github_deployer_service_account)"
-```
+1. Crée l'environnement `production`, limité à la branche `main` (Settings → Environments, ou) :
+
+   ```bash
+   gh api -X PUT repos/KellyRoussel/bobobidou_backend/environments/production \
+     -F 'deployment_branch_policy[protected_branches]=false' -F 'deployment_branch_policy[custom_branch_policies]=true'
+   gh api -X POST repos/KellyRoussel/bobobidou_backend/environments/production/deployment-branch-policies -f name=main -f type=branch
+   ```
+
+2. Après le `terraform apply`, donne au repo les deux valeurs dont il a besoin. Ce sont des variables, pas des secrets : elles ne donnent aucun accès à elles seules.
+
+   ```bash
+   cd infra
+   gh variable set GCP_WORKLOAD_IDENTITY_PROVIDER --body "$(terraform output -raw github_workload_identity_provider)"
+   gh variable set GCP_DEPLOYER_SERVICE_ACCOUNT --body "$(terraform output -raw github_deployer_service_account)"
+   ```
+
+Les actions du workflow sont épinglées par SHA de commit (un tag peut être déplacé vers un autre code), et Dependabot ([`.github/dependabot.yml`](../.github/dependabot.yml)) propose les mises à jour.
 
 ### À la main, si besoin
 
 Depuis la racine du repo :
 
 ```bash
-gcloud run deploy $SERVICE --source . --region $REGION
+gcloud run deploy $SERVICE --source . --region $REGION \
+  --build-service-account projects/$PROJECT_ID/serviceAccounts/bobobidou-builder@$PROJECT_ID.iam.gserviceaccount.com
 ```
+
+`.gcloudignore` choisit les fichiers envoyés : ceux du `.gitignore` (dont `.env`) et les identifiants `gha-creds-*.json` écrits par le workflow n'en font pas partie.
 
 ## 6. Vérifier
 

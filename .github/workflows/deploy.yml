@@ -2,12 +2,19 @@
 # Only the image changes; the service configuration comes from infra/ (Terraform).
 # The migrations are not run here: they are run by hand before merging the code
 # that needs them (see README)
+#
+# GCP only accepts the OIDC token of this file, on main, for a push or a manual
+# run, in the production environment (infra/github.tf). The actions are pinned
+# by commit SHA: a tag can be moved to other code; Dependabot updates them
 name: Deploy
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 # One deployment at a time; a waiting one is replaced by a newer push
 concurrency:
@@ -17,13 +24,16 @@ concurrency:
 env:
   REGION: europe-west1
   SERVICE: bobobidou-backend
+  BUILD_SERVICE_ACCOUNT: projects/bobobidou/serviceAccounts/bobobidou-builder@bobobidou.iam.gserviceaccount.com
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
       - run: pip install "poetry==2.4.3"
@@ -33,20 +43,27 @@ jobs:
   deploy:
     needs: test
     runs-on: ubuntu-latest
+    environment: production
     permissions:
       contents: read
       id-token: write # GitHub OIDC token, exchanged for GCP credentials
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: google-github-actions/auth@v3
+      # Writes gha-creds-*.json in the workspace: excluded from the uploaded
+      # sources and from the image (.gcloudignore, .dockerignore)
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}
 
-      - uses: google-github-actions/setup-gcloud@v3
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
 
-      - run: gcloud run deploy "$SERVICE" --source . --region "$REGION" --quiet
+      - run: |
+          gcloud run deploy "$SERVICE" --source . --region "$REGION" \
+            --build-service-account "$BUILD_SERVICE_ACCOUNT" --quiet
 
       - name: Health check
         run: |

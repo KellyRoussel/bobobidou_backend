@@ -1,0 +1,7 @@
+# Files not uploaded by `gcloud run deploy --source`
+#!include:.gitignore
+.git
+.github
+infra
+# Credentials written by google-github-actions/auth in the workspace
+gha-creds-*.json

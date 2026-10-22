@@ -9,3 +9,4 @@ docs
 alembic
 alembic.ini
 infra
+gha-creds-*.json

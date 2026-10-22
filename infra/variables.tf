@@ -21,6 +21,18 @@ variable "github_repository" {
   default     = "KellyRoussel/bobobidou_backend"
 }
 
+# Ids of the repository and of its owner: unlike the names, they never change
+# (gh api repos/KellyRoussel/bobobidou_backend --jq '.id, .owner.id')
+variable "github_repository_id" {
+  type    = string
+  default = "1427395397"
+}
+
+variable "github_repository_owner_id" {
+  type    = string
+  default = "37748254"
+}
+
 variable "google_client_id" {
   description = "Client ID of the Bobobidou OAuth client (not a secret; the client secret goes in Secret Manager)"
   type        = string

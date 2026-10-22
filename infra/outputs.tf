@@ -14,3 +14,7 @@ output "github_workload_identity_provider" {
 output "github_deployer_service_account" {
   value = google_service_account.deployer.email
 }
+
+output "builder_service_account" {
+  value = google_service_account.builder.email
+}
