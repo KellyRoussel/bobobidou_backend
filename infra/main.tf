@@ -6,7 +6,7 @@ locals {
 
   # Environment variable of the service => Secret Manager secret.
   # Terraform only creates the secrets: their values never go in the state,
-  # they are added with `gcloud secrets versions add`
+  # they are added by hand in the Secret Manager console
   secrets = {
     SECRET_KEY           = "bobobidou-secret-key"
     DATABASE_URL         = "bobobidou-database-url"

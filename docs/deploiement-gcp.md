@@ -66,7 +66,7 @@ L'infrastructure est décrite dans [`infra/`](../infra/) :
 - le dépôt Artifact Registry `cloud-run-source-deploy`, qui ne garde que les dernières images (0,5 Go gratuits) ;
 - le service Cloud Run : 0 à 2 instances, 1 CPU, 512 Mo, variables et secrets, accès public.
 
-Terraform ne gère ni les **valeurs** des secrets, ni le **code** déployé. Les valeurs des secrets se retrouveraient en clair dans l'état Terraform : on les ajoute avec gcloud. Le code est déployé par `gcloud run deploy` (étape 5), et Terraform ignore l'image du service.
+Terraform ne gère ni les **valeurs** des secrets, ni le **code** déployé. Les valeurs des secrets se retrouveraient en clair dans l'état Terraform : on les ajoute dans la console Secret Manager. Le code est déployé par `gcloud run deploy` (étape 5), et Terraform ignore l'image du service.
 
 Prérequis : Terraform (`winget install Hashicorp.Terraform`), et des identifiants pour Terraform :
 
@@ -94,20 +94,11 @@ cp terraform.tfvars.example terraform.tfvars   # mets le client ID de l'étape 2
 terraform init
 
 # 1. D'abord les secrets seuls : le service Cloud Run ne démarre pas sans leurs valeurs
-terraform apply -target=google_secret_manager_secret.app
+# (les guillemets évitent que PowerShell ne coupe l'argument au point)
+terraform apply '-target=google_secret_manager_secret.app'
 ```
 
-Ajoute les valeurs. `printf '%s'` évite le retour à la ligne final, qui se retrouverait dans le secret :
-
-```bash
-# Nouveau SECRET_KEY : différent de celui de my-backend
-python -c "import secrets; print(secrets.token_urlsafe(64), end='')" | \
-  gcloud secrets versions add bobobidou-secret-key --data-file=-
-printf '%s' 'postgresql://bobobidou_app.<ref>:<mdp>@...:5432/postgres' | \
-  gcloud secrets versions add bobobidou-database-url --data-file=-
-printf '%s' 'sk-...' | gcloud secrets versions add bobobidou-openai-key --data-file=-
-printf '%s' '<client secret>' | gcloud secrets versions add bobobidou-google-client-secret --data-file=-
-```
+Ajoute les valeurs dans la console : Secret Manager → chaque secret → **Nouvelle version**. Le `SECRET_KEY` est nouveau, différent de celui de my-backend : génère-le avec `python -c "import secrets; print(secrets.token_urlsafe(64))"`.
 
 Puis le reste :
 
@@ -121,7 +112,7 @@ Le service démarre avec une image de démonstration de Google, remplacée à l'
 ### Ensuite
 
 - **Changer la configuration** (variables, nombre d'instances, mémoire…) : modifie `infra/` puis `terraform apply`. Ne passe pas par la console ou les options de `gcloud run deploy`, sinon Terraform les annule au prochain `apply`.
-- **Changer la valeur d'un secret** : `gcloud secrets versions add <nom> --data-file=-`, puis redéploie (étape 5) pour que le service lise la nouvelle version.
+- **Changer la valeur d'un secret** : nouvelle version dans la console Secret Manager, puis redéploie (étape 5) pour que le service lise la nouvelle version.
 - **Vérifier que rien n'a bougé à la main** : `terraform plan` doit afficher `No changes`.
 
 ## 5. Déployer le code
