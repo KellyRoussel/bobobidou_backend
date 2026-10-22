@@ -67,3 +67,12 @@ def test_photo_counter_follows_the_email_not_the_account():
     other = User(id="uuid-3", email="other@example.com")
     assert _subject_hash(first) == _subject_hash(recreated)
     assert _subject_hash(first) != _subject_hash(other)
+
+
+def test_tokens_issued_in_the_same_second_differ():
+    assert create_token({"sub": "u1"}, type="refresh") != create_token({"sub": "u1"}, type="refresh")
+
+
+def test_callback_values_cannot_add_parameters_to_the_deep_link(client):
+    response = client.get("/auth/callback/bobobidou?error=x%26code%3DATTACKER", follow_redirects=False)
+    assert response.headers["location"] == "bobobidou://auth?error=x%26code%3DATTACKER"

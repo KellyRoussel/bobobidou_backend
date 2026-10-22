@@ -134,6 +134,7 @@ Les logs sont dans la console Cloud Run → Journaux, ou s'affichent avec `gclou
 ## 7. Basculer l'app
 
 1. Mets `BACKEND_URL` à la nouvelle URL dans le `.env` de l'app et publie une version.
+   Comme le `SECRET_KEY` est nouveau, les jetons émis par my-backend sont refusés : après la mise à jour, chacun doit se reconnecter une fois. Tant que d'anciennes versions de l'app appellent encore my-backend, les deux backends tiennent des compteurs de photos séparés. Pendant cette période, quelqu'un qui garde les deux versions de l'app peut donc dépasser la limite du jour.
 2. **Google Play Console** : remplace l'URL de suppression de compte par `$BACKEND_URL/account/delete` (Contenu de l'application → Sécurité des données).
 3. **Politique de confidentialité** (`docs/privacy/` dans le repo de l'app) : l'hébergeur devient Google Cloud (région `europe-west1`, Belgique) à la place de Render.
 

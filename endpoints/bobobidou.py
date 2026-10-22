@@ -49,7 +49,7 @@ async def get_ingredients(
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
     try:
-        consume_photo(user, db)
+        ticket = consume_photo(user, db)
     except PhotoLimitReached as e:
         reset_at = next_reset()
         return JSONResponse(
@@ -64,52 +64,52 @@ async def get_ingredients(
         )
 
     try:
-        # In the try: a missing key raises here, and the photo must be given back
-        client = AsyncOpenAI(api_key=settings.openai_api_key)
         base64_image = base64.b64encode(image_bytes).decode("utf-8")
 
-        # Send image to OpenAI API
-        response = await client.responses.create(
-            model=settings.openai_model,
-            temperature=0,
-            input=[
-                {
-                    "role": "system",
-                    "content": "You are a helpful assistant that can extract ingredients from an image."
-                               "The image provided should contain cooked food. "
-                               "Your role is to extrapolate what ingredients may be present in the food."
-                               "You have to go deep into to include root ingredients. For example, if you see pasta, include in the list both pasta AND flour"
-                               "Return a list of ingredients in required language. Every ingredient name should be in the singular form."
-                               f"Language: {language_name}",
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "input_image", "image_url": f"data:{content_type};base64,{base64_image}"},
-                    ],
-                }
-            ],
-            text={
-                "format": {
-                    "type": "json_schema",
-                    "name": "ingredients_list",
-                    "schema": {
-                        "type": "object",
-                        "properties": {
-                            "ingredients": {
-                                "type": "array",
-                                "items": {
-                                    "type": "string"
-                                }
-                            }
-                        },
-                        "required": ["ingredients"],
-                        "additionalProperties": False
+        # In the try: a missing key raises here, and the photo must be given back.
+        # `async with` closes the client's HTTP connections
+        async with AsyncOpenAI(api_key=settings.openai_api_key) as client:
+            response = await client.responses.create(
+                model=settings.openai_model,
+                temperature=0,
+                input=[
+                    {
+                        "role": "system",
+                        "content": "You are a helpful assistant that can extract ingredients from an image."
+                                   "The image provided should contain cooked food. "
+                                   "Your role is to extrapolate what ingredients may be present in the food."
+                                   "You have to go deep into to include root ingredients. For example, if you see pasta, include in the list both pasta AND flour"
+                                   "Return a list of ingredients in required language. Every ingredient name should be in the singular form."
+                                   f"Language: {language_name}",
                     },
-                    "strict": True
-                }
-            },
-        )
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_image", "image_url": f"data:{content_type};base64,{base64_image}"},
+                        ],
+                    }
+                ],
+                text={
+                    "format": {
+                        "type": "json_schema",
+                        "name": "ingredients_list",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "ingredients": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string"
+                                    }
+                                }
+                            },
+                            "required": ["ingredients"],
+                            "additionalProperties": False
+                        },
+                        "strict": True
+                    }
+                },
+            )
 
         ingredients = json.loads(response.output_text)["ingredients"]
         ingredients = [ingredients.lower().strip() for ingredients in ingredients]
@@ -118,7 +118,7 @@ async def get_ingredients(
     except Exception as e:
         # Don't leak internal errors (OpenAI messages, keys config...) to the client
         print(f"🔴 Bobobidou ingredients error: {e}")
-        refund_photo(user, db)
+        refund_photo(ticket, db)
         raise HTTPException(status_code=502, detail="Ingredient recognition failed")
 
 

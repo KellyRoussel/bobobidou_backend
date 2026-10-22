@@ -4,6 +4,7 @@ The paths are the ones of my-backend (`/login/google/bobobidou`,
 `/auth/exchange/bobobidou`…) so that the app only has to change its backend URL.
 """
 from datetime import timedelta, datetime
+from urllib.parse import urlencode
 
 import jwt
 from fastapi import APIRouter, Depends, HTTPException
@@ -66,16 +67,14 @@ async def auth_callback(request: Request, app: str = Depends(check_app)):
     error = request.query_params.get("error")
 
     if error:
-        return RedirectResponse(f"{app}://auth?error={error}")
+        params = {"error": error}
+    elif not code:
+        params = {"error": "no_code"}
+    else:
+        params = {"code": code, **({"state": state} if state else {})}
 
-    if not code:
-        return RedirectResponse(f"{app}://auth?error=no_code")
-
-    redirect_url = f"{app}://auth?code={code}"
-    if state:
-        redirect_url += f"&state={state}"
-
-    return RedirectResponse(redirect_url)
+    # Encoded: a value must not be able to add parameters to the deep link
+    return RedirectResponse(f"{app}://auth?{urlencode(params)}")
 
 
 @authentication_router.get("/auth/exchange/{app}")
@@ -144,8 +143,14 @@ async def get_refresh_token(request: Request):
         ).first()
         if not stored_token:
             raise HTTPException(status_code=401, detail="Invalid refresh token")
-        # is_active is stored as the string "true"/"false": "false" is truthy
-        if stored_token.is_active != "true":
+        # Deactivated only if still active, in one UPDATE: of two concurrent
+        # refreshes with the same token, only one gets new tokens
+        # (is_active is stored as the string "true"/"false")
+        claimed = db.query(RefreshToken).filter(
+            RefreshToken.id == stored_token.id,
+            RefreshToken.is_active == "true"
+        ).update({"is_active": "false"}, synchronize_session=False)
+        if not claimed:
             raise HTTPException(status_code=401, detail="Refresh token is inactive")
 
         if not db.query(User).filter(User.id == user_id).first():

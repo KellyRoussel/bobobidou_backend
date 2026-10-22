@@ -10,6 +10,7 @@ person once the account is gone. Rows older than USAGE_RETENTION_DAYS are purged
 import hashlib
 import hmac
 import logging
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 
 from sqlalchemy.dialects.postgresql import insert
@@ -30,6 +31,13 @@ class PhotoLimitReached(Exception):
         super().__init__(f"{scope} daily photo limit reached ({limit})")
         self.scope = scope  # "user" | "global"
         self.limit = limit
+
+
+@dataclass(frozen=True)
+class PhotoTicket:
+    """A counted photo: what refund_photo needs to give it back."""
+    subject: str
+    day: date
 
 
 def _subject_hash(user: User) -> str:
@@ -67,16 +75,17 @@ def _increment(db: Session, subject: str, day: date, limit: int) -> int | None:
     return db.execute(stmt).scalar_one_or_none()
 
 
-def consume_photo(user: User, db: Session) -> None:
+def consume_photo(user: User, db: Session) -> PhotoTicket:
     """Count one photo for the user and globally, or raise PhotoLimitReached.
 
     Nothing is counted when a limit is reached.
     """
     day = _today()
+    subject = _subject_hash(user)
     user_limit = daily_photo_limit(user.id)
     global_limit = settings.global_daily_photo_limit
     try:
-        if user_limit <= 0 or _increment(db, _subject_hash(user), day, user_limit) is None:
+        if user_limit <= 0 or _increment(db, subject, day, user_limit) is None:
             db.rollback()
             raise PhotoLimitReached("user", user_limit)
         global_count = _increment(db, GLOBAL_SUBJECT, day, global_limit) if global_limit > 0 else None
@@ -90,6 +99,7 @@ def consume_photo(user: User, db: Session) -> None:
                 PhotoUsage.day < day - timedelta(days=USAGE_RETENTION_DAYS)
             ).delete(synchronize_session=False)
         db.commit()
+        return PhotoTicket(subject=subject, day=day)
     except PhotoLimitReached:
         raise
     except Exception:
@@ -97,13 +107,15 @@ def consume_photo(user: User, db: Session) -> None:
         raise
 
 
-def refund_photo(user: User, db: Session) -> None:
-    """Give back a photo counted by consume_photo whose analysis failed (best effort)."""
-    day = _today()
+def refund_photo(ticket: PhotoTicket, db: Session) -> None:
+    """Give back a photo counted by consume_photo whose analysis failed (best effort).
+
+    On the day it was counted, even if midnight passed during the analysis.
+    """
     try:
         db.query(PhotoUsage).filter(
-            PhotoUsage.subject.in_([_subject_hash(user), GLOBAL_SUBJECT]),
-            PhotoUsage.day == day,
+            PhotoUsage.subject.in_([ticket.subject, GLOBAL_SUBJECT]),
+            PhotoUsage.day == ticket.day,
             PhotoUsage.count > 0,
         ).update({"count": PhotoUsage.count - 1}, synchronize_session=False)
         db.commit()
