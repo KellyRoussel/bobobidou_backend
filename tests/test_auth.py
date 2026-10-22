@@ -56,3 +56,14 @@ def test_refresh_requires_a_refresh_token(client):
     access = create_token({"sub": "u1"}, type="access")
     response = client.post("/auth/refresh-token", headers={"X-Refresh-Token": access})
     assert response.status_code == 401
+
+
+def test_photo_counter_follows_the_email_not_the_account():
+    from dependencies.photo_quota_service import _subject_hash
+    from models.database_models import User
+
+    first = User(id="uuid-1", email="Kelly@Example.com")
+    recreated = User(id="uuid-2", email="kelly@example.com ")
+    other = User(id="uuid-3", email="other@example.com")
+    assert _subject_hash(first) == _subject_hash(recreated)
+    assert _subject_hash(first) != _subject_hash(other)

@@ -1,10 +1,11 @@
 """Daily limit of the photos analysed by OpenAI, to protect the bill.
 
 Two counters per day (UTC): one per user and a global one. The usage rows are
-keyed by an HMAC of the user id and have no link to
-`bobobidou.users`: they survive an account deletion, so deleting and recreating
-one's account does not reset the limit, and nothing ties them back to a person
-once the account is gone. Rows older than USAGE_RETENTION_DAYS are purged.
+keyed by an HMAC of the user's email, not by the user id (a new random UUID
+each time an account is created), and have no link to `bobobidou.users`: they
+survive an account deletion, so deleting and recreating one's account with the
+same Google account does not reset the limit, and nothing ties them back to a
+person once the account is gone. Rows older than USAGE_RETENTION_DAYS are purged.
 """
 import hashlib
 import hmac
@@ -15,7 +16,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from config import settings
-from models.database_models import PhotoUsage
+from models.database_models import PhotoUsage, User
 
 logger = logging.getLogger(__name__)
 
@@ -31,8 +32,10 @@ class PhotoLimitReached(Exception):
         self.limit = limit
 
 
-def _subject_hash(user_id: str) -> str:
-    message = f"bobobidou-photo-usage:{user_id}".encode()
+def _subject_hash(user: User) -> str:
+    # The email is what identifies a user across accounts (see save_user)
+    identity = user.email.strip().lower() if user.email else f"id:{user.id}"
+    message = f"bobobidou-photo-usage:{identity}".encode()
     return hmac.new(settings.secret_key.encode(), message, hashlib.sha256).hexdigest()
 
 
@@ -64,16 +67,16 @@ def _increment(db: Session, subject: str, day: date, limit: int) -> int | None:
     return db.execute(stmt).scalar_one_or_none()
 
 
-def consume_photo(user_id: str, db: Session) -> None:
+def consume_photo(user: User, db: Session) -> None:
     """Count one photo for the user and globally, or raise PhotoLimitReached.
 
     Nothing is counted when a limit is reached.
     """
     day = _today()
-    user_limit = daily_photo_limit(user_id)
+    user_limit = daily_photo_limit(user.id)
     global_limit = settings.global_daily_photo_limit
     try:
-        if user_limit <= 0 or _increment(db, _subject_hash(user_id), day, user_limit) is None:
+        if user_limit <= 0 or _increment(db, _subject_hash(user), day, user_limit) is None:
             db.rollback()
             raise PhotoLimitReached("user", user_limit)
         global_count = _increment(db, GLOBAL_SUBJECT, day, global_limit) if global_limit > 0 else None
@@ -94,12 +97,12 @@ def consume_photo(user_id: str, db: Session) -> None:
         raise
 
 
-def refund_photo(user_id: str, db: Session) -> None:
+def refund_photo(user: User, db: Session) -> None:
     """Give back a photo counted by consume_photo whose analysis failed (best effort)."""
     day = _today()
     try:
         db.query(PhotoUsage).filter(
-            PhotoUsage.subject.in_([_subject_hash(user_id), GLOBAL_SUBJECT]),
+            PhotoUsage.subject.in_([_subject_hash(user), GLOBAL_SUBJECT]),
             PhotoUsage.day == day,
             PhotoUsage.count > 0,
         ).update({"count": PhotoUsage.count - 1}, synchronize_session=False)

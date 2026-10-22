@@ -11,6 +11,7 @@ from config import settings
 from database import get_db
 from dependencies.account_service import delete_account
 from dependencies.photo_quota_service import PhotoLimitReached, consume_photo, next_reset, refund_photo
+from models.database_models import User
 
 bobobidou_router = APIRouter(prefix="/bobobidou", tags=["Bobobidou"])
 
@@ -43,9 +44,12 @@ async def get_ingredients(
         raise HTTPException(status_code=400, detail="Empty image")
 
     # Count the photo before calling OpenAI, given back if the analysis fails
-    user_id = request.state.user_id
+    # Also refuses the access tokens of an account deleted since they were issued
+    user = db.query(User).filter(User.id == request.state.user_id).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
     try:
-        consume_photo(user_id, db)
+        consume_photo(user, db)
     except PhotoLimitReached as e:
         reset_at = next_reset()
         return JSONResponse(
@@ -114,7 +118,7 @@ async def get_ingredients(
     except Exception as e:
         # Don't leak internal errors (OpenAI messages, keys config...) to the client
         print(f"🔴 Bobobidou ingredients error: {e}")
-        refund_photo(user_id, db)
+        refund_photo(user, db)
         raise HTTPException(status_code=502, detail="Ingredient recognition failed")
 
 

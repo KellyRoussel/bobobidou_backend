@@ -64,13 +64,13 @@ class AuthState(Base):
 
 
 class PhotoUsage(Base):
-    """Photos analysed per day, by user (HMAC of the user id) and globally.
+    """Photos analysed per day, by user (HMAC of the email) and globally.
 
     No foreign key to `users` on purpose: the counters must survive an account
     deletion, otherwise deleting and recreating one's account resets the limit.
     """
     __tablename__ = "photo_usage"
 
-    subject = Column(String(64), primary_key=True)  # HMAC-SHA256 hex of the user id, or "global"
+    subject = Column(String(64), primary_key=True)  # HMAC-SHA256 hex of the email, or "global"
     day = Column(Date, primary_key=True)  # UTC
     count = Column(Integer, nullable=False, default=0, server_default="0")
