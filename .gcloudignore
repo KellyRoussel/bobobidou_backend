@@ -5,3 +5,5 @@
 infra
 # Credentials written by google-github-actions/auth in the workspace
 gha-creds-*.json
+# Local variants of .env (.gitignore only has .env)
+.env.*

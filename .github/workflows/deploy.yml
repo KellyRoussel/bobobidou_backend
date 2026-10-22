@@ -24,7 +24,6 @@ concurrency:
 env:
   REGION: europe-west1
   SERVICE: bobobidou-backend
-  BUILD_SERVICE_ACCOUNT: projects/bobobidou/serviceAccounts/bobobidou-builder@bobobidou.iam.gserviceaccount.com
 
 jobs:
   test:
@@ -33,10 +32,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Before setup-python, which caches the dependencies with it
+      - run: pipx install "poetry==2.4.3"
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
-      - run: pip install "poetry==2.4.3"
+          cache: poetry
       - run: poetry install --no-root
       - run: poetry run pytest
 
@@ -54,7 +55,8 @@ jobs:
 
       # Writes gha-creds-*.json in the workspace: excluded from the uploaded
       # sources and from the image (.gcloudignore, .dockerignore)
-      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+      - id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}
@@ -63,7 +65,10 @@ jobs:
 
       - run: |
           gcloud run deploy "$SERVICE" --source . --region "$REGION" \
-            --build-service-account "$BUILD_SERVICE_ACCOUNT" --quiet
+            --build-service-account "projects/$GCP_PROJECT/serviceAccounts/$BUILD_SERVICE_ACCOUNT" --quiet
+        env:
+          BUILD_SERVICE_ACCOUNT: ${{ vars.GCP_BUILD_SERVICE_ACCOUNT }}
+          GCP_PROJECT: ${{ steps.auth.outputs.project_id }}
 
       - name: Health check
         run: |

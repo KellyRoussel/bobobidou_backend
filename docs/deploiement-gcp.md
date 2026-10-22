@@ -136,12 +136,20 @@ Le workflow se connecte à GCP par Workload Identity Federation : GitHub échang
    gh api -X POST repos/KellyRoussel/bobobidou_backend/environments/production/deployment-branch-policies -f name=main -f type=branch
    ```
 
-2. Après le `terraform apply`, donne au repo les deux valeurs dont il a besoin. Ce sont des variables, pas des secrets : elles ne donnent aucun accès à elles seules.
+2. Après le `terraform apply`, donne au repo les trois valeurs dont il a besoin. Ce sont des variables, pas des secrets : elles ne donnent aucun accès à elles seules.
 
    ```bash
    cd infra
    gh variable set GCP_WORKLOAD_IDENTITY_PROVIDER --body "$(terraform output -raw github_workload_identity_provider)"
    gh variable set GCP_DEPLOYER_SERVICE_ACCOUNT --body "$(terraform output -raw github_deployer_service_account)"
+   gh variable set GCP_BUILD_SERVICE_ACCOUNT --body "$(terraform output -raw builder_service_account)"
+   ```
+
+3. Retire `roles/editor` au compte Compute par défaut. Il ne sert plus, et un build lancé sans `--build-service-account` tournerait avec ce compte, donc avec les droits Editor :
+
+   ```bash
+   gcloud projects remove-iam-policy-binding $PROJECT_ID --role=roles/editor \
+     --member="serviceAccount:$(gcloud projects describe $PROJECT_ID --format='value(projectNumber)')-compute@developer.gserviceaccount.com"
    ```
 
 Les actions du workflow sont épinglées par SHA de commit (un tag peut être déplacé vers un autre code), et Dependabot ([`.github/dependabot.yml`](../.github/dependabot.yml)) propose les mises à jour.
@@ -155,7 +163,7 @@ gcloud run deploy $SERVICE --source . --region $REGION \
   --build-service-account projects/$PROJECT_ID/serviceAccounts/bobobidou-builder@$PROJECT_ID.iam.gserviceaccount.com
 ```
 
-`.gcloudignore` choisit les fichiers envoyés : ceux du `.gitignore` (dont `.env`) et les identifiants `gha-creds-*.json` écrits par le workflow n'en font pas partie.
+`.gcloudignore` choisit les fichiers envoyés : ceux du `.gitignore`, les `.env.*` et les identifiants `gha-creds-*.json` écrits par le workflow n'en font pas partie.
 
 ## 6. Vérifier
 
