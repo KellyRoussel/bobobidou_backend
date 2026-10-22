@@ -1,0 +1,2 @@
+# Copy to terraform.tfvars
+google_client_id = "<client id>.apps.googleusercontent.com"
