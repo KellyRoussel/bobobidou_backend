@@ -80,4 +80,4 @@ Les migrations ne tournent pas au démarrage du conteneur : le service n'a que l
 
 ## Déploiement
 
-Voir [docs/deploiement-gcp.md](docs/deploiement-gcp.md) : projet GCP, client OAuth, secrets, `gcloud run deploy`, puis bascule de l'app.
+Voir [docs/deploiement-gcp.md](docs/deploiement-gcp.md) : projet GCP, client OAuth, infrastructure Terraform (`infra/`), `gcloud run deploy`, puis bascule de l'app.

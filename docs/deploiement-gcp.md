@@ -15,12 +15,10 @@ SA=$SERVICE@$PROJECT_ID.iam.gserviceaccount.com
 
 1. Crée le projet et associe-lui un compte de facturation. C'est obligatoire même pour rester dans l'offre gratuite.
 2. **Ajoute une alerte de budget**, par exemple 5 € : Facturation → Budgets et alertes.
-3. Active les API nécessaires :
+3. Sélectionne-le dans gcloud (les API sont activées par Terraform, étape 4) :
 
 ```bash
 gcloud config set project $PROJECT_ID
-gcloud services enable run.googleapis.com cloudbuild.googleapis.com \
-  artifactregistry.googleapis.com secretmanager.googleapis.com
 ```
 
 L'URL du service est connue d'avance : `https://$SERVICE-<numéro du projet>.$REGION.run.app`. Le numéro s'obtient avec :
@@ -57,63 +55,84 @@ MIGRATION_DATABASE_URL=postgresql://postgres.<ref>:<mdp admin>@aws-0-<région>.p
   poetry run alembic stamp 0001_baseline
 ```
 
-## 4. Compte de service et secrets
+## 4. Infrastructure (Terraform)
 
-Un compte de service dédié, qui n'a accès qu'à ses secrets :
+L'infrastructure est décrite dans [`infra/`](../infra/) :
+
+- les API du projet ;
+- le compte de service `$SERVICE`, qui n'a accès qu'à ses secrets ;
+- les 4 secrets ;
+- le droit `roles/run.builder` du compte Compute par défaut, qui construit les images ;
+- le dépôt Artifact Registry `cloud-run-source-deploy`, qui ne garde que les dernières images (0,5 Go gratuits) ;
+- le service Cloud Run : 0 à 2 instances, 1 CPU, 512 Mo, variables et secrets, accès public.
+
+Terraform ne gère ni les **valeurs** des secrets, ni le **code** déployé. Les valeurs des secrets se retrouveraient en clair dans l'état Terraform : on les ajoute avec gcloud. Le code est déployé par `gcloud run deploy` (étape 5), et Terraform ignore l'image du service.
+
+Prérequis : Terraform (`winget install Hashicorp.Terraform`), et des identifiants pour Terraform :
 
 ```bash
-gcloud iam service-accounts create $SERVICE --display-name "Bobobidou backend (Cloud Run)"
-
-# Nouveau SECRET_KEY : différent de celui de my-backend
-python -c "import secrets; print(secrets.token_urlsafe(64), end='')" | \
-  gcloud secrets create bobobidou-secret-key --data-file=-
-printf '%s' 'postgresql://bobobidou_app.<ref>:<mdp>@...:5432/postgres' | \
-  gcloud secrets create bobobidou-database-url --data-file=-
-printf '%s' 'sk-...' | gcloud secrets create bobobidou-openai-key --data-file=-
-printf '%s' '<client secret>' | gcloud secrets create bobobidou-google-client-secret --data-file=-
-
-for s in bobobidou-secret-key bobobidou-database-url bobobidou-openai-key bobobidou-google-client-secret; do
-  gcloud secrets add-iam-policy-binding $s --member=serviceAccount:$SA --role=roles/secretmanager.secretAccessor
-done
+gcloud auth application-default login
 ```
 
-`printf '%s'` évite le retour à la ligne final, qui se retrouverait dans le secret. Pour changer une valeur plus tard : `gcloud secrets versions add <nom> --data-file=-`, puis redéploie.
+### Une seule fois : le bucket de l'état
 
-## 5. Déployer
+L'état Terraform est rangé dans un bucket GCS, à créer avant le premier `terraform init` :
+
+```bash
+gcloud storage buckets create gs://bobobidou-tfstate --location=$REGION \
+  --uniform-bucket-level-access --public-access-prevention
+gcloud storage buckets update gs://bobobidou-tfstate --versioning
+```
+
+Le versioning permet de récupérer un état précédent en cas d'erreur.
+
+### Première création
+
+```bash
+cd infra
+cp terraform.tfvars.example terraform.tfvars   # mets le client ID de l'étape 2
+terraform init
+
+# 1. D'abord les secrets seuls : le service Cloud Run ne démarre pas sans leurs valeurs
+terraform apply -target=google_secret_manager_secret.app
+```
+
+Ajoute les valeurs. `printf '%s'` évite le retour à la ligne final, qui se retrouverait dans le secret :
+
+```bash
+# Nouveau SECRET_KEY : différent de celui de my-backend
+python -c "import secrets; print(secrets.token_urlsafe(64), end='')" | \
+  gcloud secrets versions add bobobidou-secret-key --data-file=-
+printf '%s' 'postgresql://bobobidou_app.<ref>:<mdp>@...:5432/postgres' | \
+  gcloud secrets versions add bobobidou-database-url --data-file=-
+printf '%s' 'sk-...' | gcloud secrets versions add bobobidou-openai-key --data-file=-
+printf '%s' '<client secret>' | gcloud secrets versions add bobobidou-google-client-secret --data-file=-
+```
+
+Puis le reste :
+
+```bash
+# 2. Importe le compte de service déjà créé avec gcloud, crée tout le reste
+terraform apply
+```
+
+Le service démarre avec une image de démonstration de Google, remplacée à l'étape 5.
+
+### Ensuite
+
+- **Changer la configuration** (variables, nombre d'instances, mémoire…) : modifie `infra/` puis `terraform apply`. Ne passe pas par la console ou les options de `gcloud run deploy`, sinon Terraform les annule au prochain `apply`.
+- **Changer la valeur d'un secret** : `gcloud secrets versions add <nom> --data-file=-`, puis redéploie (étape 5) pour que le service lise la nouvelle version.
+- **Vérifier que rien n'a bougé à la main** : `terraform plan` doit afficher `No changes`.
+
+## 5. Déployer le code
 
 Depuis la racine du repo :
 
 ```bash
-gcloud run deploy $SERVICE \
-  --source . \
-  --region $REGION \
-  --service-account $SA \
-  --allow-unauthenticated \
-  --min-instances 0 --max-instances 2 \
-  --cpu 1 --memory 512Mi \
-  --set-env-vars "GOOGLE_CLIENT_ID=<client id>,AUTH_REDIRECT_URI=$BACKEND_URL/auth/callback" \
-  --set-secrets "SECRET_KEY=bobobidou-secret-key:latest,DATABASE_URL=bobobidou-database-url:latest,OPENAI_API_KEY=bobobidou-openai-key:latest,GOOGLE_CLIENT_SECRET=bobobidou-google-client-secret:latest"
+gcloud run deploy $SERVICE --source . --region $REGION
 ```
 
-- `--source .` fait construire l'image par Cloud Build à partir du `Dockerfile`, puis la range dans Artifact Registry (dépôt `cloud-run-source-deploy`).
-- `--allow-unauthenticated` est nécessaire : c'est l'app qui appelle le service, l'authentification se fait par nos JWT.
-- `--max-instances 2` plafonne la facture si quelque chose s'emballe.
-- Si le build échoue sur une erreur de permission, donne `roles/run.builder` au compte de service Compute par défaut (`<numéro>-compute@developer.gserviceaccount.com`).
-
-Les redéploiements suivants : `gcloud run deploy $SERVICE --source . --region $REGION`. La configuration (variables, secrets, compte de service) est conservée.
-
-Artifact Registry n'offre que 0,5 Go gratuits : garde seulement les dernières images.
-
-```bash
-cat > /tmp/cleanup.json <<'EOF'
-[
-  {"name": "keep-last-3", "action": {"type": "Keep"}, "mostRecentVersions": {"keepCount": 3}},
-  {"name": "delete-old", "action": {"type": "Delete"}, "condition": {"olderThan": "7d"}}
-]
-EOF
-gcloud artifacts repositories set-cleanup-policies cloud-run-source-deploy \
-  --location=$REGION --policy=/tmp/cleanup.json
-```
+`--source .` fait construire l'image par Cloud Build à partir du `Dockerfile`, puis la range dans le dépôt `cloud-run-source-deploy`. Seule l'image change : le reste de la configuration vient de Terraform et n'est pas modifié.
 
 ## 6. Vérifier
 
