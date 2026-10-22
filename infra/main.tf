@@ -22,6 +22,9 @@ resource "google_project_service" "apis" {
     "artifactregistry.googleapis.com",
     "secretmanager.googleapis.com",
     "iam.googleapis.com",
+    # Workload Identity Federation, for GitHub Actions (github.tf)
+    "iamcredentials.googleapis.com",
+    "sts.googleapis.com",
   ])
 
   service            = each.value

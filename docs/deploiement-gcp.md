@@ -64,7 +64,8 @@ L'infrastructure est décrite dans [`infra/`](../infra/) :
 - les 4 secrets ;
 - le droit `roles/run.builder` du compte Compute par défaut, qui construit les images ;
 - le dépôt Artifact Registry `cloud-run-source-deploy`, qui ne garde que les dernières images (0,5 Go gratuits) ;
-- le service Cloud Run : 0 à 2 instances, 1 CPU, 512 Mo, variables et secrets, accès public.
+- le service Cloud Run : 0 à 2 instances, 1 CPU, 512 Mo, variables et secrets, accès public ;
+- le déploiement depuis GitHub Actions ([`infra/github.tf`](../infra/github.tf), étape 5).
 
 Terraform ne gère ni les **valeurs** des secrets, ni le **code** déployé. Les valeurs des secrets se retrouveraient en clair dans l'état Terraform : on les ajoute dans la console Secret Manager. Le code est déployé par `gcloud run deploy` (étape 5), et Terraform ignore l'image du service.
 
@@ -117,13 +118,29 @@ Le service démarre avec une image de démonstration de Google, remplacée à l'
 
 ## 5. Déployer le code
 
+Chaque push sur `main` est déployé par GitHub Actions ([`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml)) : les tests, puis `gcloud run deploy --source .`, puis un appel à `/health`. On peut aussi le relancer à la main : Actions → Deploy → *Run workflow*.
+
+`--source .` fait construire l'image par Cloud Build à partir du `Dockerfile`, puis la range dans le dépôt `cloud-run-source-deploy`. Seule l'image change : le reste de la configuration vient de Terraform et n'est pas modifié.
+
+Le workflow ne lance pas les migrations : lance-les à la main **avant** de merger le code qui en a besoin (voir le README).
+
+### Une seule fois : relier GitHub au projet
+
+Le workflow se connecte à GCP par Workload Identity Federation : GitHub échange son jeton OIDC contre des identifiants temporaires du compte `github-deployer`. Aucune clé n'est stockée dans GitHub, et seule la branche `main` de ce repo y a accès. Après le `terraform apply`, donne au repo les deux valeurs dont il a besoin. Ce sont des variables, pas des secrets : elles ne donnent aucun accès à elles seules.
+
+```bash
+cd infra
+gh variable set GCP_WORKLOAD_IDENTITY_PROVIDER --body "$(terraform output -raw github_workload_identity_provider)"
+gh variable set GCP_DEPLOYER_SERVICE_ACCOUNT --body "$(terraform output -raw github_deployer_service_account)"
+```
+
+### À la main, si besoin
+
 Depuis la racine du repo :
 
 ```bash
 gcloud run deploy $SERVICE --source . --region $REGION
 ```
-
-`--source .` fait construire l'image par Cloud Build à partir du `Dockerfile`, puis la range dans le dépôt `cloud-run-source-deploy`. Seule l'image change : le reste de la configuration vient de Terraform et n'est pas modifié.
 
 ## 6. Vérifier
 
