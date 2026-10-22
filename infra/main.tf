@@ -22,6 +22,9 @@ resource "google_project_service" "apis" {
     "artifactregistry.googleapis.com",
     "secretmanager.googleapis.com",
     "iam.googleapis.com",
+    # Workload Identity Federation, for GitHub Actions (github.tf)
+    "iamcredentials.googleapis.com",
+    "sts.googleapis.com",
   ])
 
   service            = each.value
@@ -60,12 +63,20 @@ resource "google_secret_manager_secret_iam_member" "backend" {
   member    = google_service_account.backend.member
 }
 
-# --- Build: `gcloud run deploy --source` builds with the default Compute service account ---
+# --- Build: `gcloud run deploy --source --build-service-account` ---
 
-resource "google_project_iam_member" "compute_run_builder" {
+# Dedicated to the builds, instead of the default Compute account, which has
+# roles/editor on the project: whoever can start a build as an account has its rights
+resource "google_service_account" "builder" {
+  account_id   = "bobobidou-builder"
+  display_name = "Bobobidou image builds (Cloud Build)"
+}
+
+# Read the uploaded sources, write the image and the build logs
+resource "google_project_iam_member" "builder" {
   project = var.project_id
   role    = "roles/run.builder"
-  member  = "serviceAccount:${data.google_project.this.number}-compute@developer.gserviceaccount.com"
+  member  = google_service_account.builder.member
 }
 
 # The repository where `gcloud run deploy --source` puts the images. Only 0.5 GB

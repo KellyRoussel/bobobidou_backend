@@ -62,9 +62,10 @@ L'infrastructure est décrite dans [`infra/`](../infra/) :
 - les API du projet ;
 - le compte de service `$SERVICE`, qui n'a accès qu'à ses secrets ;
 - les 4 secrets ;
-- le droit `roles/run.builder` du compte Compute par défaut, qui construit les images ;
+- le compte `bobobidou-builder`, qui construit les images avec le seul rôle `roles/run.builder`. Le compte Compute par défaut n'est pas utilisé : il a `roles/editor` sur le projet, et quiconque lance un build avec un compte en obtient les droits ;
 - le dépôt Artifact Registry `cloud-run-source-deploy`, qui ne garde que les dernières images (0,5 Go gratuits) ;
-- le service Cloud Run : 0 à 2 instances, 1 CPU, 512 Mo, variables et secrets, accès public.
+- le service Cloud Run : 0 à 2 instances, 1 CPU, 512 Mo, variables et secrets, accès public ;
+- le déploiement depuis GitHub Actions ([`infra/github.tf`](../infra/github.tf), étape 5).
 
 Terraform ne gère ni les **valeurs** des secrets, ni le **code** déployé. Les valeurs des secrets se retrouveraient en clair dans l'état Terraform : on les ajoute dans la console Secret Manager. Le code est déployé par `gcloud run deploy` (étape 5), et Terraform ignore l'image du service.
 
@@ -117,13 +118,52 @@ Le service démarre avec une image de démonstration de Google, remplacée à l'
 
 ## 5. Déployer le code
 
+Chaque push sur `main` est déployé par GitHub Actions ([`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml)) : les tests, puis `gcloud run deploy --source .`, puis un appel à `/health`. On peut aussi le relancer à la main : Actions → Deploy → *Run workflow*.
+
+`--source .` fait construire l'image par Cloud Build à partir du `Dockerfile`, puis la range dans le dépôt `cloud-run-source-deploy`. Seule l'image change : le reste de la configuration vient de Terraform et n'est pas modifié.
+
+Le workflow ne lance pas les migrations : lance-les à la main **avant** de merger le code qui en a besoin (voir le README).
+
+### Une seule fois : relier GitHub au projet
+
+Le workflow se connecte à GCP par Workload Identity Federation : GitHub échange son jeton OIDC contre des identifiants temporaires du compte `github-deployer`. Aucune clé n'est stockée dans GitHub. GCP n'accepte que le jeton du workflow `deploy.yml`, lancé depuis `main` par un push ou à la main, dans l'environnement GitHub `production` ; le repo et son propriétaire sont vérifiés par leurs identifiants numériques, qui ne changent pas même si un nom est repris par quelqu'un d'autre. Le compte `github-deployer` peut seulement déployer.
+
+1. Crée l'environnement `production`, limité à la branche `main` (Settings → Environments, ou) :
+
+   ```bash
+   gh api -X PUT repos/KellyRoussel/bobobidou_backend/environments/production \
+     -F 'deployment_branch_policy[protected_branches]=false' -F 'deployment_branch_policy[custom_branch_policies]=true'
+   gh api -X POST repos/KellyRoussel/bobobidou_backend/environments/production/deployment-branch-policies -f name=main -f type=branch
+   ```
+
+2. Après le `terraform apply`, donne au repo les trois valeurs dont il a besoin. Ce sont des variables, pas des secrets : elles ne donnent aucun accès à elles seules.
+
+   ```bash
+   cd infra
+   gh variable set GCP_WORKLOAD_IDENTITY_PROVIDER --body "$(terraform output -raw github_workload_identity_provider)"
+   gh variable set GCP_DEPLOYER_SERVICE_ACCOUNT --body "$(terraform output -raw github_deployer_service_account)"
+   gh variable set GCP_BUILD_SERVICE_ACCOUNT --body "$(terraform output -raw builder_service_account)"
+   ```
+
+3. Retire `roles/editor` au compte Compute par défaut. Il ne sert plus, et un build lancé sans `--build-service-account` tournerait avec ce compte, donc avec les droits Editor :
+
+   ```bash
+   gcloud projects remove-iam-policy-binding $PROJECT_ID --role=roles/editor \
+     --member="serviceAccount:$(gcloud projects describe $PROJECT_ID --format='value(projectNumber)')-compute@developer.gserviceaccount.com"
+   ```
+
+Les actions du workflow sont épinglées par SHA de commit (un tag peut être déplacé vers un autre code), et Dependabot ([`.github/dependabot.yml`](../.github/dependabot.yml)) propose les mises à jour.
+
+### À la main, si besoin
+
 Depuis la racine du repo :
 
 ```bash
-gcloud run deploy $SERVICE --source . --region $REGION
+gcloud run deploy $SERVICE --source . --region $REGION \
+  --build-service-account projects/$PROJECT_ID/serviceAccounts/bobobidou-builder@$PROJECT_ID.iam.gserviceaccount.com
 ```
 
-`--source .` fait construire l'image par Cloud Build à partir du `Dockerfile`, puis la range dans le dépôt `cloud-run-source-deploy`. Seule l'image change : le reste de la configuration vient de Terraform et n'est pas modifié.
+`.gcloudignore` choisit les fichiers envoyés : ceux du `.gitignore`, les `.env.*` et les identifiants `gha-creds-*.json` écrits par le workflow n'en font pas partie.
 
 ## 6. Vérifier
 
