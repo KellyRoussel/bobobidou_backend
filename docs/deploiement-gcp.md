@@ -156,7 +156,26 @@ Les actions du workflow sont épinglées par SHA de commit (un tag peut être d�
 
 ### Tests des PR et mises à jour des dépendances
 
-Chaque PR lance les tests ([`.github/workflows/tests.yml`](../.github/workflows/tests.yml)), sans secret ni accès à GCP. Pour empêcher de merger une PR rouge : Settings → Rules → Rulesets, une règle sur `main` avec *Require status checks to pass* et le check `test`.
+Chaque PR lance deux jobs ([`.github/workflows/tests.yml`](../.github/workflows/tests.yml)), sans secret ni accès à GCP :
+
+- `test` : les tests unitaires (`poetry run pytest`), sans base de données ;
+- `e2e` : construit l'image de production à partir du `Dockerfile`, comme Cloud Build au déploiement, puis la démarre et la teste de bout en bout. Une base Postgres jetable (service du job) reçoit les migrations depuis zéro (`alembic upgrade head`, puis `alembic check`), et le conteneur s'y connecte avec le rôle `bobobidou_app`, comme en production. Google et OpenAI sont remplacés par des doublures ([`tests/e2e/stubs.py`](../tests/e2e/stubs.py)), lancées par les tests, et le conteneur reçoit leurs URL par [`tests/e2e/container.env`](../tests/e2e/container.env) (`GOOGLE_*_URL`, `OPENAI_BASE_URL`). Le job échoue si l'image ne se construit pas, si le conteneur s'arrête ou si `/health` ne répond pas en 60 s. Les tests ([`tests/e2e/test_container.py`](../tests/e2e/test_container.py)) passent ensuite par les routes principales : connexion Google et échange du code, rotation du refresh token, photo analysée, échec rendu et limite du jour, suppression du compte depuis l'app et depuis la page web.
+
+Une mise à jour de dépendance qui casse l'image ou le démarrage de l'app est donc vue sur sa PR, et non après le merge. Pour empêcher de merger une PR rouge : Settings → Rules → Rulesets, une règle sur `main` avec *Require status checks to pass* et les checks `test` et `e2e`.
+
+Pour lancer `e2e` en local (Docker) :
+
+```bash
+docker build -t bobobidou-backend:e2e .
+docker run -d --name e2e-pg --network host -e POSTGRES_PASSWORD=postgres postgres:17
+MIGRATION_DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/postgres poetry run alembic upgrade head
+docker exec e2e-pg psql -U postgres -c "ALTER ROLE bobobidou_app LOGIN PASSWORD 'bobobidou-e2e'"
+docker run -d --name bobobidou --network host --env-file tests/e2e/container.env bobobidou-backend:e2e
+E2E_BASE_URL=http://127.0.0.1:8080 poetry run pytest tests/e2e
+docker rm -f bobobidou e2e-pg
+```
+
+Sans `E2E_BASE_URL`, ces tests sont ignorés par un simple `poetry run pytest`. Les ports 5432, 8080 et 9999 (doublures) doivent être libres.
 
 Une fois par semaine, Dependabot ([`.github/dependabot.yml`](../.github/dependabot.yml)) ouvre des PR pour les dépendances en retard : les packages de `pyproject.toml` (avec `poetry.lock`), une seule PR pour les versions mineures et correctives et une par version majeure ; les providers Terraform de `infra/` ; les actions des workflows. Il reste à les relire et les merger ; un merge est déployé comme tout push sur `main`, et une PR Terraform demande ensuite un `terraform apply`. SQLAlchemy reste en 2.0.x : la 2.1 utilise psycopg 3 par défaut pour `postgresql://`, on utilise psycopg2. L'image de base n'est pas suivie : le tag `python:3.13-slim` reçoit déjà les correctifs à chaque build, et changer de version de Python se décide à la main (`Dockerfile`, `pyproject.toml` et workflows).
 
