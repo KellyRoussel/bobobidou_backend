@@ -1,6 +1,30 @@
-# Updates the SHAs the workflow actions are pinned to
+# Once a week, opens PRs for the outdated dependencies; the tests run on each
+# PR (tests.yml). The base image is not watched: its python:3.13-slim tag
+# already gets the patches at each build, and a new Python version is a choice
+# (Dockerfile, pyproject.toml and the workflows together)
 version: 2
 updates:
+  # Poetry: the packages of pyproject.toml, with poetry.lock
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    # One PR for all the minor and patch updates, one per major update
+    groups:
+      python-minor-patch:
+        update-types: [minor, patch]
+    ignore:
+      # Kept on 2.0.x: 2.1 makes postgresql:// default to psycopg 3, we use psycopg2
+      - dependency-name: sqlalchemy
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+
+  # Providers of infra/.terraform.lock.hcl; terraform apply stays manual
+  - package-ecosystem: terraform
+    directory: /infra
+    schedule:
+      interval: weekly
+
+  # SHAs the workflow actions are pinned to
   - package-ecosystem: github-actions
     directory: /
     schedule:

@@ -154,6 +154,14 @@ Le workflow se connecte à GCP par Workload Identity Federation : GitHub échang
 
 Les actions du workflow sont épinglées par SHA de commit (un tag peut être déplacé vers un autre code), et Dependabot ([`.github/dependabot.yml`](../.github/dependabot.yml)) propose les mises à jour.
 
+### Tests des PR et mises à jour des dépendances
+
+Chaque PR lance les tests ([`.github/workflows/tests.yml`](../.github/workflows/tests.yml)), sans secret ni accès à GCP. Pour empêcher de merger une PR rouge : Settings → Rules → Rulesets, une règle sur `main` avec *Require status checks to pass* et le check `test`.
+
+Une fois par semaine, Dependabot ([`.github/dependabot.yml`](../.github/dependabot.yml)) ouvre des PR pour les dépendances en retard : les packages de `pyproject.toml` (avec `poetry.lock`), une seule PR pour les versions mineures et correctives et une par version majeure ; les providers Terraform de `infra/` ; les actions des workflows. Il reste à les relire et les merger ; un merge est déployé comme tout push sur `main`, et une PR Terraform demande ensuite un `terraform apply`. SQLAlchemy reste en 2.0.x : la 2.1 utilise psycopg 3 par défaut pour `postgresql://`, on utilise psycopg2. L'image de base n'est pas suivie : le tag `python:3.13-slim` reçoit déjà les correctifs à chaque build, et changer de version de Python se décide à la main (`Dockerfile`, `pyproject.toml` et workflows).
+
+Pour aussi recevoir une PR dès qu'une faille est publiée, y compris dans une dépendance indirecte : Settings → Code security → *Dependabot alerts* et *Dependabot security updates*.
+
 ### À la main, si besoin
 
 Depuis la racine du repo :
