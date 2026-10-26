@@ -1,5 +1,7 @@
 # Tests of each PR, Dependabot's included, before it can be merged and deployed.
-# No secrets or GCP access: the tests need no database
+# No secrets or GCP access: `test` needs no database; `e2e` builds the
+# production image and tests the running container against a throwaway
+# Postgres and doubles of Google and OpenAI (tests/e2e)
 name: Tests
 
 on:
@@ -28,3 +30,60 @@ jobs:
           cache: poetry
       - run: poetry install --no-root
       - run: poetry run pytest
+
+  e2e:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 15
+    env:
+      MIGRATION_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+      E2E_BASE_URL: http://127.0.0.1:8080
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: pipx install "poetry==2.4.3"
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+          cache: poetry
+      - run: poetry install --no-root
+
+      # The image Cloud Build makes at deployment, from the same Dockerfile
+      - name: Build the image
+        run: docker build -t bobobidou-backend:e2e .
+
+      # Empty database: the migrations from scratch, then the bobobidou_app role
+      # the backend connects with, as in production (its password is set by hand)
+      - name: Migrate the database
+        run: |
+          poetry run alembic upgrade head
+          poetry run alembic check
+          docker exec "${{ job.services.postgres.id }}" \
+            psql -U postgres -c "ALTER ROLE bobobidou_app LOGIN PASSWORD 'bobobidou-e2e'"
+
+      # Host network: the container reaches Postgres and the doubles on 127.0.0.1.
+      # Fails if the container stops or /health does not answer within 60 s
+      - name: Start the container
+        run: |
+          docker run -d --name bobobidou --network host --env-file tests/e2e/container.env bobobidou-backend:e2e
+          for _ in $(seq 60); do
+            if [ "$(docker inspect -f '{{.State.Running}}' bobobidou)" != true ]; then
+              echo "::error::The container stopped"; exit 1
+            fi
+            curl --fail --silent --max-time 5 "$E2E_BASE_URL/health" && exit 0
+            sleep 1
+          done
+          echo "::error::/health did not answer"; exit 1
+
+      - run: poetry run pytest tests/e2e -rs
+
+      - name: Container logs
+        if: always()
+        run: docker logs bobobidou || true
