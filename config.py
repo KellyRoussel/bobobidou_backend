@@ -18,8 +18,16 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini-2024-07-18"
     max_image_mb: int = 10
-    daily_photo_limit: int = 5  # Photos analysed per user and per day (UTC)
+    free_trial_photos: int = 3  # Photos offered once per person (email), before subscribing
+    daily_photo_limit: int = 5  # Photos analysed per subscriber and per day (UTC)
     global_daily_photo_limit: int = 500  # All users together, protects the OpenAI bill
+
+    # RevenueCat (subscriptions): secret API key (v1, sk_...), and the
+    # Authorization header value RevenueCat sends with its webhooks
+    revenuecat_secret_key: str = ""
+    revenuecat_webhook_auth: str = ""
+    revenuecat_api_url: str = "https://api.revenuecat.com/v1"
+    revenuecat_entitlement: str = "premium"
 
     google_client_id: str = ""
     google_client_secret: str = ""

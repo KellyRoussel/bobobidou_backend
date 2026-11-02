@@ -15,6 +15,7 @@ from config import settings
 from database import get_db
 from dependencies.account_service import delete_account, revoke_google_token
 from dependencies.google_auth_service import google_auth_service
+from dependencies.subscription_service import cancel_renewal, is_premium
 from dependencies.tokens import APP, create_token, decode_token
 from models.database_models import User
 
@@ -84,6 +85,8 @@ utilisé dans l'application.</p>
   <li>votre compte (nom, adresse e-mail, photo de profil) ;</li>
   <li>vos jetons de connexion.</li>
 </ul>
+<p>Si vous avez un abonnement Bobobidou Premium, il est résilié : il ne sera plus renouvelé ni prélevé,
+et reste utilisable jusqu'à la fin de la période déjà payée.</p>
 <p>La suppression est immédiate et définitive. Votre compte Google lui-même n'est pas supprimé.
 Votre journal (repas, douleurs) n'est stocké que sur votre téléphone : il disparaît en désinstallant l'application.</p>
 <a class="button" href="/account/delete/start">Continuer avec Google</a>
@@ -91,7 +94,8 @@ Votre journal (repas, douleurs) n'est stocké que sur votre téléphone : il dis
 <h2>Delete my Bobobidou account</h2>
 <p class="muted">Delete your account from the app (<strong>Me</strong> tab → <strong>Delete my account</strong>)
 or from this page by signing in with the Google account you use in the app. Your account (name, email,
-profile picture) and sign-in tokens are deleted immediately. Your Google account itself is not deleted. Your journal is only stored on your phone and is
+profile picture) and sign-in tokens are deleted immediately, and your Premium subscription, if any, is cancelled:
+it won't renew, and stays usable until the end of the paid period. Your Google account itself is not deleted. Your journal is only stored on your phone and is
 removed when you uninstall the app.</p>
 """)
 
@@ -138,12 +142,17 @@ async def account_deletion_callback(
 
     confirm_token = create_token({"sub": user.id}, type=_TOKEN_TYPE,
                                  expires_delta=timedelta(minutes=_CONFIRM_TOKEN_MINUTES))
+    subscription_warning = """
+<p><strong>Votre abonnement Premium sera résilié</strong> : il ne sera plus renouvelé, et reste utilisable
+jusqu'à la fin de la période payée.</p>
+<p class="muted">Your Premium subscription will be cancelled: it won't renew.</p>
+""" if is_premium(db, user) else ""
     return _page("Confirmer la suppression", f"""
 <h1>Confirmer la suppression</h1>
 <p>Supprimer définitivement le compte associé à <strong>{escape(user.email)}</strong> ?
 Cette action est irréversible.</p>
 <p class="muted">Permanently delete the account of this email? This cannot be undone.</p>
-<form method="post" action="/account/delete/confirm">
+{subscription_warning}<form method="post" action="/account/delete/confirm">
   <input type="hidden" name="token" value="{escape(confirm_token)}">
   <button class="button danger" type="submit">Supprimer mon compte · Delete</button>
   <a class="button secondary" href="/account/delete">Annuler · Cancel</a>
@@ -162,15 +171,29 @@ async def confirm_account_deletion(token: str = Form(...), db: Session = Depends
     if payload.get("type") != _TOKEN_TYPE or payload.get("app") != APP or not payload.get("sub"):
         return _error("Demande invalide.", "Invalid request.")
 
+    user = db.query(User).filter(User.id == payload["sub"]).first()
+    subscription = await cancel_renewal(db, user) if user else "none"
     try:
         delete_account(payload["sub"], db)
     except Exception as e:
         print(f"🔴 Error deleting account {payload['sub']}: {e}")
         return _error("La suppression a échoué, réessayez plus tard.", "Deletion failed, please try again later.", 500)
 
+    subscription_note = {
+        "cancelled": """
+<p>Votre abonnement Premium a été résilié : il ne sera plus renouvelé.</p>
+<p class="muted">Your Premium subscription has been cancelled: it won't renew.</p>
+""",
+        "failed": """
+<p><strong>Nous n'avons pas pu résilier votre abonnement Premium.</strong> Résiliez-le dans Google Play
+(Paiements et abonnements → Abonnements) pour ne plus être prélevé.</p>
+<p class="muted">We could not cancel your Premium subscription: cancel it in Google Play
+(Payments &amp; subscriptions → Subscriptions) to stop the payments.</p>
+""",
+    }.get(subscription, "")
     # An already deleted account (form sent twice) ends here too
-    return _page("Compte supprimé", """
+    return _page("Compte supprimé", f"""
 <h1>Compte supprimé</h1>
 <p>Votre compte Bobobidou a été supprimé et son accès à votre compte Google a été révoqué.</p>
 <p class="muted">Your Bobobidou account has been deleted and its access to your Google account has been revoked.</p>
-""")
+{subscription_note}""")

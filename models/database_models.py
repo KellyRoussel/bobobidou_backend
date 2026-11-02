@@ -6,7 +6,7 @@ this schema.
 import enum
 from datetime import datetime
 
-from sqlalchemy import Column, String, DateTime, Date, ForeignKey, Integer, Text, Enum, MetaData
+from sqlalchemy import Boolean, Column, String, DateTime, Date, ForeignKey, Integer, Text, Enum, MetaData
 from sqlalchemy.orm import declarative_base, relationship
 
 
@@ -74,3 +74,34 @@ class PhotoUsage(Base):
     subject = Column(String(64), primary_key=True)  # HMAC-SHA256 hex of the email, or "global"
     day = Column(Date, primary_key=True)  # UTC
     count = Column(Integer, nullable=False, default=0, server_default="0")
+
+
+class PhotoTrial(Base):
+    """Free photos used by each person (HMAC of the email), once in a lifetime.
+
+    No foreign key to `users`, like PhotoUsage: deleting and recreating one's
+    account does not give a new trial.
+    """
+    __tablename__ = "photo_trials"
+
+    subject = Column(String(64), primary_key=True)  # Same HMAC as PhotoUsage.subject
+    used = Column(Integer, nullable=False, default=0, server_default="0")
+    last_used_at = Column(DateTime(timezone=True), nullable=False)
+
+
+class Subscription(Base):
+    """Subscription state of a RevenueCat customer, kept up to date by its webhooks.
+
+    Keyed by the RevenueCat app user id (an HMAC of the email, see
+    subscription_service), with no foreign key to `users`: a paid period
+    survives an account deletion.
+    """
+    __tablename__ = "subscriptions"
+
+    subscriber = Column(String(64), primary_key=True)
+    # End of the paid period (grace period included); None: no entitlement
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    will_renew = Column(Boolean, nullable=False, default=False, server_default="false")
+    product_id = Column(String, nullable=True)
+    store = Column(String, nullable=True)
+    updated_at = Column(DateTime(timezone=True), nullable=False)
