@@ -73,3 +73,20 @@ resource "google_service_account_iam_member" "deployer_act_as_builder" {
   role               = "roles/iam.serviceAccountUser"
   member             = google_service_account.deployer.member
 }
+
+# Admin connection of the database, for the `migrate` job. Not in local.secrets
+# (main.tf), whose secrets go to the service: it must never have this one
+resource "google_secret_manager_secret" "migration_database_url" {
+  secret_id = "bobobidou-migration-database-url"
+  replication {
+    auto {}
+  }
+
+  depends_on = [google_project_service.apis]
+}
+
+resource "google_secret_manager_secret_iam_member" "deployer_migration_database_url" {
+  secret_id = google_secret_manager_secret.migration_database_url.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = google_service_account.deployer.member
+}

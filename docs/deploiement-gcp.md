@@ -118,15 +118,15 @@ Le service démarre avec une image de démonstration de Google, remplacée à l'
 
 ## 5. Déployer le code
 
-Chaque push sur `main` est déployé par GitHub Actions ([`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml)) : les tests, puis `gcloud run deploy --source .`, puis un appel à `/health`. On peut aussi le relancer à la main : Actions → Deploy → *Run workflow*.
+Chaque push sur `main` est déployé par GitHub Actions ([`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml)) : les tests, les migrations (`alembic upgrade head`), puis `gcloud run deploy --source .`, puis un appel à `/health`. On peut aussi le relancer à la main : Actions → Deploy → *Run workflow*.
 
 `--source .` fait construire l'image par Cloud Build à partir du `Dockerfile`, puis la range dans le dépôt `cloud-run-source-deploy`. Seule l'image change : le reste de la configuration vient de Terraform et n'est pas modifié.
 
-Le workflow ne lance pas les migrations : lance-les à la main **avant** de merger le code qui en a besoin (voir le README).
+Si les migrations échouent, rien n'est déployé. Elles doivent rester compatibles avec la version en production (voir le README).
 
 ### Une seule fois : relier GitHub au projet
 
-Le workflow se connecte à GCP par Workload Identity Federation : GitHub échange son jeton OIDC contre des identifiants temporaires du compte `github-deployer`. Aucune clé n'est stockée dans GitHub. GCP n'accepte que le jeton du workflow `deploy.yml`, lancé depuis `main` par un push ou à la main, dans l'environnement GitHub `production` ; le repo et son propriétaire sont vérifiés par leurs identifiants numériques, qui ne changent pas même si un nom est repris par quelqu'un d'autre. Le compte `github-deployer` peut seulement déployer.
+Le workflow se connecte à GCP par Workload Identity Federation : GitHub échange son jeton OIDC contre des identifiants temporaires du compte `github-deployer`. Aucune clé n'est stockée dans GitHub. GCP n'accepte que le jeton du workflow `deploy.yml`, lancé depuis `main` par un push ou à la main, dans l'environnement GitHub `production` ; le repo et son propriétaire sont vérifiés par leurs identifiants numériques, qui ne changent pas même si un nom est repris par quelqu'un d'autre. Le compte `github-deployer` peut seulement déployer et lire la connexion admin de la base, pour les migrations.
 
 1. Crée l'environnement `production`, limité à la branche `main` (Settings → Environments, ou) :
 
@@ -153,6 +153,20 @@ Le workflow se connecte à GCP par Workload Identity Federation : GitHub échang
    ```
 
 Les actions du workflow sont épinglées par SHA de commit (un tag peut être déplacé vers un autre code), et Dependabot ([`.github/dependabot.yml`](../.github/dependabot.yml)) propose les mises à jour.
+
+### Une seule fois : la connexion admin des migrations
+
+À faire **avant** de merger le workflow qui lance les migrations, sinon le déploiement s'arrête à cette étape :
+
+1. Vérifie que la baseline est bien marquée comme appliquée : `poetry run alembic current` doit afficher une révision (sinon, voir l'[étape 3](#3-base-de-données)).
+2. Crée le secret et l'accès du compte `github-deployer` :
+
+   ```bash
+   cd infra
+   terraform apply '-target=google_secret_manager_secret_iam_member.deployer_migration_database_url'
+   ```
+
+3. Dans Secret Manager, ajoute une **Nouvelle version** de `bobobidou-migration-database-url` : la connexion admin, par le **pooler** (les runners GitHub sortent en IPv4), comme `MIGRATION_DATABASE_URL` en local.
 
 ### Tests des PR et mises à jour des dépendances
 
