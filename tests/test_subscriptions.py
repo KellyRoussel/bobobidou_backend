@@ -78,3 +78,60 @@ def test_webhook_requires_the_configured_authorization(client, monkeypatch):
 def test_subscription_routes_require_a_token(client):
     assert client.get("/bobobidou/subscription").status_code == 401
     assert client.post("/bobobidou/subscription/refresh").status_code == 401
+
+
+def test_renewing_play_subscriptions():
+    from dependencies.subscription_service import _renewing_play_subscriptions
+
+    def subs(**subscription) -> list:
+        return _renewing_play_subscriptions(_subscriber(_iso(timedelta(days=10)), **subscription))
+
+    assert len(subs()) == 1
+    assert subs(unsubscribe_detected_at=_iso(timedelta(days=-1))) == []
+    assert subs(refunded_at=_iso(timedelta(days=-1))) == []
+    assert subs(store="app_store") == []
+    # Expired, but on hold for a billing issue: Google may still charge it
+    on_hold = _subscriber(_iso(timedelta(days=-5)), billing_issues_detected_at=_iso(timedelta(days=-6)))
+    assert len(_renewing_play_subscriptions(on_hold)) == 1
+    # Expired normally, or on hold for too long: nothing left to cancel
+    assert _renewing_play_subscriptions(_subscriber(_iso(timedelta(days=-5)))) == []
+    old = _subscriber(_iso(timedelta(days=-90)), billing_issues_detected_at=_iso(timedelta(days=-91)))
+    assert _renewing_play_subscriptions(old) == []
+
+
+def test_cancel_reports_failed_without_transaction_id(monkeypatch):
+    import asyncio
+
+    from dependencies import subscription_service
+
+    async def fetch(_):
+        return _subscriber(_iso(timedelta(days=10)), store_transaction_id=None)
+
+    monkeypatch.setattr(settings, "revenuecat_secret_key", "sk_test")
+    monkeypatch.setattr(subscription_service, "fetch_subscriber", fetch)
+    user = User(id="u1", email="a@example.com")
+    assert asyncio.run(subscription_service.cancel_renewal(None, user)) == "failed"
+
+
+def test_cancel_is_cancelled_even_if_the_sync_fails(monkeypatch):
+    import asyncio
+
+    import httpx
+
+    from dependencies import subscription_service
+
+    async def fetch(_):
+        return _subscriber(_iso(timedelta(days=10)))
+
+    async def sync(*_):
+        raise subscription_service.RevenueCatError("timeout")
+
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json={}))
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(settings, "revenuecat_secret_key", "sk_test")
+    monkeypatch.setattr(subscription_service, "fetch_subscriber", fetch)
+    monkeypatch.setattr(subscription_service, "sync_subscriber", sync)
+    monkeypatch.setattr(subscription_service.httpx, "AsyncClient",
+                        lambda **kwargs: real_client(transport=transport, **kwargs))
+    user = User(id="u1", email="a@example.com")
+    assert asyncio.run(subscription_service.cancel_renewal(None, user)) == "cancelled"

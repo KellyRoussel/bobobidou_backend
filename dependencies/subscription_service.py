@@ -152,11 +152,40 @@ def purge_ended_subscriptions(db: Session) -> None:
     ).delete(synchronize_session=False)
 
 
+# Google keeps an unpaid subscription in grace period then account hold for up
+# to ~60 days after its expiry date, and recovers it if the payment goes through
+RECOVERABLE_AFTER_EXPIRY = timedelta(days=60)
+
+
+def _renewing_play_subscriptions(subscriber: dict) -> list[dict]:
+    """The customer's Google Play subscriptions that may still be charged.
+
+    Running ones, and expired ones in grace period / account hold (billing
+    issue, the payment can still be recovered). Not those already cancelled
+    by the user or refunded.
+    """
+    now = _now()
+    renewing = []
+    for sub in (subscriber.get("subscriptions") or {}).values():
+        if (sub.get("store") != "play_store" or sub.get("unsubscribe_detected_at") is not None
+                or sub.get("refunded_at") is not None):
+            continue
+        expires = _parse_date(sub.get("expires_date"))
+        if expires is None:
+            continue  # Not a subscription that renews
+        on_hold = (sub.get("billing_issues_detected_at") is not None
+                   and expires + RECOVERABLE_AFTER_EXPIRY > now)
+        if expires > now or on_hold:
+            renewing.append(sub)
+    return renewing
+
+
 async def cancel_renewal(db: Session, user: User) -> str:
     """Stop the renewal of the user's Google Play subscriptions (account deletion).
 
     The paid period is not refunded and stays usable until it ends. Never
-    raises: returns "none" (nothing to cancel), "cancelled" or "failed".
+    raises: returns "none" (nothing to cancel), "cancelled" or "failed"
+    (the app then asks the user to cancel in Google Play).
     """
     app_user_id = subscriber_id(user)
     if not settings.revenuecat_secret_key and get_subscription(db, app_user_id) is None:
@@ -164,28 +193,28 @@ async def cancel_renewal(db: Session, user: User) -> str:
         return "none"
     try:
         subscriber = await fetch_subscriber(app_user_id)
-        now = _now()
-        to_cancel = [
-            sub["store_transaction_id"]
-            for sub in (subscriber.get("subscriptions") or {}).values()
-            if sub.get("store") == "play_store"
-            and sub.get("store_transaction_id")
-            and (_parse_date(sub.get("expires_date")) or now) > now
-            and sub.get("unsubscribe_detected_at") is None
-            and sub.get("refunded_at") is None
-        ]
+        to_cancel = _renewing_play_subscriptions(subscriber)
         if not to_cancel:
             return "none"
+        transaction_ids = [sub.get("store_transaction_id") for sub in to_cancel]
+        if not all(transaction_ids):
+            # Can't be cancelled without it: never report "none" for a subscription still charged
+            raise RevenueCatError("Google Play subscription without store_transaction_id")
         async with httpx.AsyncClient(timeout=10) as client:
-            for transaction_id in to_cancel:
+            for transaction_id in transaction_ids:
                 url = f"{_subscriber_url(app_user_id)}/subscriptions/{quote(transaction_id, safe='')}/cancel"
                 response = await client.post(url, headers=_headers())
                 if response.status_code not in (200, 201):
                     raise RevenueCatError(f"RevenueCat cancel returned {response.status_code}")
-        # The webhook will follow; store the new state right away
-        await sync_subscriber(db, app_user_id)
-        logger.info("Cancelled the renewal of subscriber %s", app_user_id[:8])
-        return "cancelled"
     except Exception as e:
         logger.error("Subscription cancellation failed for subscriber %s: %s", app_user_id[:8], e)
         return "failed"
+
+    logger.info("Cancelled the renewal of subscriber %s", app_user_id[:8])
+    # The webhook will follow; store the new state right away. A failure here
+    # doesn't change the outcome: the renewal is cancelled
+    try:
+        await sync_subscriber(db, app_user_id)
+    except Exception as e:
+        logger.warning("Sync after cancellation failed for subscriber %s: %s", app_user_id[:8], e)
+    return "cancelled"
