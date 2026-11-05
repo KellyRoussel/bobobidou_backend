@@ -1,7 +1,7 @@
 # Tests of each PR, Dependabot's included, before it can be merged and deployed.
 # No secrets or GCP access: `test` needs no database; `e2e` builds the
 # production image and tests the running container against a throwaway
-# Postgres and doubles of Google and OpenAI (tests/e2e)
+# Postgres and doubles of Google, OpenAI and RevenueCat (tests/e2e)
 name: Tests
 
 on:

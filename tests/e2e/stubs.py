@@ -7,13 +7,17 @@ One HTTP server, on the port the container is configured with (container.env):
 - /google/userinfo, /google/revoke
 - /openai/v1/responses: a fixed ingredients list; an error for the English
   prompts, to test the refund of a failed analysis
+- /revenuecat/v1/subscribers/<id> (GET) and .../subscriptions/<transaction>/cancel
+  (POST): the customers are what the tests put in `StubServer.subscribers`
 """
 import json
 import threading
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs
 
 INGREDIENTS = ["  Pâte ", "Farine", "TOMATE"]
+REVENUECAT = "/revenuecat/v1/subscribers/"
 
 
 class StubServer(ThreadingHTTPServer):
@@ -23,6 +27,8 @@ class StubServer(ThreadingHTTPServer):
         super().__init__(("127.0.0.1", port), _Handler)
         # (path, headers, body) of each request received, for the assertions
         self.requests: list[tuple[str, dict, bytes]] = []
+        # RevenueCat customers (API v1 `subscriber` objects) by app user id
+        self.subscribers: dict[str, dict] = {}
 
     def start(self) -> None:
         threading.Thread(target=self.serve_forever, daemon=True).start()
@@ -50,8 +56,20 @@ class _Handler(BaseHTTPRequestHandler):
         self.server.requests.append((self.path.split("?")[0], dict(self.headers), body))
         return body
 
+    def _revenuecat_authorized(self) -> bool:
+        return self.headers.get("Authorization") == "Bearer sk_e2e"
+
+    def _subscriber(self, app_user_id: str) -> dict:
+        return self.server.subscribers.setdefault(app_user_id, {
+            "original_app_user_id": app_user_id, "entitlements": {}, "subscriptions": {}})
+
     def do_GET(self):
         self._record()
+        if self.path.startswith(REVENUECAT):
+            if not self._revenuecat_authorized():
+                return self._reply(401, {"message": "Invalid API key"})
+            app_user_id = self.path.removeprefix(REVENUECAT)
+            return self._reply(200, {"subscriber": self._subscriber(app_user_id)})
         if self.path == "/google/userinfo":
             token = self.headers.get("Authorization", "").removeprefix("Bearer ")
             if not token.startswith("google-"):
@@ -63,6 +81,16 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = self._record()
+        if self.path.startswith(REVENUECAT) and self.path.endswith("/cancel"):
+            if not self._revenuecat_authorized():
+                return self._reply(401, {"message": "Invalid API key"})
+            app_user_id, _, transaction_id, _ = self.path.removeprefix(REVENUECAT).split("/")
+            subscriber = self._subscriber(app_user_id)
+            for subscription in subscriber["subscriptions"].values():
+                if subscription.get("store_transaction_id") == transaction_id:
+                    subscription["unsubscribe_detected_at"] = datetime.now(timezone.utc).isoformat()
+                    return self._reply(200, {"subscriber": subscriber})
+            return self._reply(404, {"message": "Subscription not found"})
         if self.path == "/google/token":
             form = {k: v[0] for k, v in parse_qs(body.decode()).items()}
             if form.get("code") == "bad-code" or form.get("client_secret") != "e2e-client-secret":

@@ -6,12 +6,15 @@ locals {
 
   # Environment variable of the service => Secret Manager secret.
   # Terraform only creates the secrets: their values never go in the state,
-  # they are added by hand in the Secret Manager console
+  # they are added by hand in the Secret Manager console.
+  # REVENUECAT_*: subscriptions, RevenueCat secret API key (v1) and webhook Authorization header
   secrets = {
-    SECRET_KEY           = "bobobidou-secret-key"
-    DATABASE_URL         = "bobobidou-database-url"
-    OPENAI_API_KEY       = "bobobidou-openai-key"
-    GOOGLE_CLIENT_SECRET = "bobobidou-google-client-secret"
+    SECRET_KEY              = "bobobidou-secret-key"
+    DATABASE_URL            = "bobobidou-database-url"
+    OPENAI_API_KEY          = "bobobidou-openai-key"
+    GOOGLE_CLIENT_SECRET    = "bobobidou-google-client-secret"
+    REVENUECAT_SECRET_KEY   = "bobobidou-revenuecat-secret-key"
+    REVENUECAT_WEBHOOK_AUTH = "bobobidou-revenuecat-webhook-auth"
   }
 }
 

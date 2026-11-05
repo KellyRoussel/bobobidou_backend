@@ -61,7 +61,7 @@ L'infrastructure est décrite dans [`infra/`](../infra/) :
 
 - les API du projet ;
 - le compte de service `$SERVICE`, qui n'a accès qu'à ses secrets ;
-- les 4 secrets ;
+- les 6 secrets ;
 - le compte `bobobidou-builder`, qui construit les images avec le seul rôle `roles/run.builder`. Le compte Compute par défaut n'est pas utilisé : il a `roles/editor` sur le projet, et quiconque lance un build avec un compte en obtient les droits ;
 - le dépôt Artifact Registry `cloud-run-source-deploy`, qui ne garde que les dernières images (0,5 Go gratuits) ;
 - le service Cloud Run : 0 à 2 instances, 1 CPU, 512 Mo, variables et secrets, accès public ;
@@ -240,3 +240,28 @@ Quand plus aucune version de l'app n'appelle my-backend, retire de my-backend :
 - les réglages `bobobidou_*` et `OPENAI_BOBOBIDOU_KEY` dans `config.py` et sur Render.
 
 Garde ses migrations `b0b1d0a1c2d3` et `c2d3e4f5a6b7` : elles font partie de l'historique de `public.alembic_version`. Supprime aussi les URI de redirection Bobobidou de l'ancien client OAuth.
+
+## 9. Abonnements (RevenueCat)
+
+À faire une fois, avant de publier la version de l'app avec l'abonnement.
+
+1. **Migration** : rien à faire, le workflow de déploiement crée les tables `photo_trials` et `subscriptions` avant de déployer le code.
+2. **Secrets** : les deux nouveaux secrets doivent avoir une valeur avant que le service les lise. D'abord les créer seuls :
+
+   ```bash
+   cd infra
+   terraform apply '-target=google_secret_manager_secret.app'
+   ```
+
+   Puis, dans Secret Manager, une **Nouvelle version** de chacun :
+   - `bobobidou-revenuecat-secret-key` : RevenueCat → Project settings → API keys → clé secrète **v1** (`sk_...`) ;
+   - `bobobidou-revenuecat-webhook-auth` : une valeur aléatoire (`python -c "import secrets; print(secrets.token_urlsafe(32))"`), la même que dans le webhook RevenueCat.
+
+   Enfin `terraform apply` (accès du service aux secrets, variables du service).
+3. **Google Play** : profil de paiement, puis l'abonnement `bobobidou_premium_monthly` avec une offre de base mensuelle à 1,99 €. Activer l'API *Google Play Android Developer* dans le projet GCP, créer un compte de service pour RevenueCat et l'inviter dans la Play Console (droits « Afficher les données financières » et « Gérer les commandes et les abonnements »), en suivant le guide RevenueCat.
+4. **RevenueCat** :
+   - app Android (nom du package de l'app, JSON du compte de service), notifications Google en temps réel (RTDN) branchées comme l'indique RevenueCat ;
+   - droit (entitlement) `premium` attaché au produit, offre `default` avec le forfait mensuel ;
+   - comportement de transfert : vers le dernier utilisateur connecté (*Transfer to new App User ID*) ;
+   - Integrations → Webhooks : URL `<url du backend>/bobobidou/revenuecat/webhook`, en-tête *Authorization* = la valeur du secret `bobobidou-revenuecat-webhook-auth`. Le bouton *Send test event* doit répondre 200.
+5. **Vérifier** : en test interne, avec un compte testeur de licence (achats non facturés, renouvellements accélérés) : achat, `GET /bobobidou/subscription` → `premium: true`, résiliation dans le Play Store → `will_renew: false`, suppression du compte → `subscription: "cancelled"`.

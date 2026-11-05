@@ -10,7 +10,12 @@ from sqlalchemy.orm import Session
 from config import settings
 from database import get_db
 from dependencies.account_service import delete_account
-from dependencies.photo_quota_service import PhotoLimitReached, consume_photo, next_reset, refund_photo
+from dependencies.photo_quota_service import (
+    PhotoLimitReached, consume_photo, daily_photo_limit, next_reset, refund_photo, trial_photos_left,
+)
+from dependencies.subscription_service import (
+    RevenueCatError, cancel_renewal, get_subscription, is_active, subscriber_id, sync_subscriber,
+)
 from models.database_models import User
 
 bobobidou_router = APIRouter(prefix="/bobobidou", tags=["Bobobidou"])
@@ -51,6 +56,12 @@ async def get_ingredients(
     try:
         ticket = consume_photo(user, db)
     except PhotoLimitReached as e:
+        if e.scope == "trial":
+            # Free photos used up: the app offers the subscription
+            return JSONResponse(
+                status_code=402,
+                content={"detail": "Subscription required", "code": "subscription_required", "limit": e.limit},
+            )
         reset_at = next_reset()
         return JSONResponse(
             status_code=429,
@@ -122,10 +133,61 @@ async def get_ingredients(
         raise HTTPException(status_code=502, detail="Ingredient recognition failed")
 
 
+def _current_user(request: Request, db: Session) -> User:
+    user = db.query(User).filter(User.id == request.state.user_id).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    return user
+
+
+def _subscription_status(user: User, db: Session) -> dict:
+    app_user_id = subscriber_id(user)
+    subscription = get_subscription(db, app_user_id)
+    active = is_active(subscription)
+    return {
+        # RevenueCat app user id, for Purchases.logIn in the app
+        "app_user_id": app_user_id,
+        "premium": active,
+        "expires_at": subscription.expires_at.isoformat() if active else None,
+        "will_renew": bool(active and subscription.will_renew),
+        "free_photos_left": trial_photos_left(user, db),
+        "free_photos_total": settings.free_trial_photos,
+        "daily_photo_limit": daily_photo_limit(user.id),
+    }
+
+
+@bobobidou_router.get("/subscription")
+async def get_my_subscription(request: Request, db: Session = Depends(get_db)):
+    """Subscription state and free photos left, as known from the RevenueCat webhooks."""
+    return _subscription_status(_current_user(request, db), db)
+
+
+@bobobidou_router.post("/subscription/refresh")
+async def refresh_my_subscription(request: Request, db: Session = Depends(get_db)):
+    """Read the subscription from RevenueCat now (after a purchase or a restore,
+    without waiting for the webhook)."""
+    user = _current_user(request, db)
+    try:
+        await sync_subscriber(db, subscriber_id(user))
+    except RevenueCatError as e:
+        print(f"🔴 Bobobidou subscription refresh error: {e}")
+        raise HTTPException(status_code=502, detail="Subscription check failed")
+    return _subscription_status(user, db)
+
+
 @bobobidou_router.delete("/account")
 async def delete_my_account(request: Request, db: Session = Depends(get_db)):
-    """Delete the caller's account (user and refresh tokens, not the Google account)."""
+    """Delete the caller's account (user and refresh tokens, not the Google account).
+
+    Also stops the renewal of their subscription; the paid period stays usable
+    if they come back. A failed cancellation doesn't prevent the deletion:
+    `subscription` is then "failed" and the app tells them to cancel in Google Play.
+    """
     user_id = request.state.user_id
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    subscription = await cancel_renewal(db, user)
     try:
         deleted = delete_account(user_id, db)
     except Exception as e:
@@ -133,4 +195,4 @@ async def delete_my_account(request: Request, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail="Failed to delete account")
     if not deleted:
         raise HTTPException(status_code=404, detail="User not found")
-    return {"message": "Account deleted", "user_id": user_id}
+    return {"message": "Account deleted", "user_id": user_id, "subscription": subscription}
