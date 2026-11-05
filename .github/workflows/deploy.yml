@@ -1,7 +1,8 @@
-# Each push on main: tests, then the new version is deployed to Cloud Run.
+# Each push on main: tests, migrations, then the new version is deployed to Cloud Run.
 # Only the image changes; the service configuration comes from infra/ (Terraform).
-# The migrations are not run here: they are run by hand before merging the code
-# that needs them (see README)
+# The version in production keeps running on the migrated database until the new
+# one is up, and stays there if the deployment fails: a migration must stay
+# compatible with it (see README)
 #
 # GCP only accepts the OIDC token of this file, on main, for a push or a manual
 # run, in the production environment (infra/github.tf). The actions are pinned
@@ -41,8 +42,42 @@ jobs:
       - run: poetry install --no-root
       - run: poetry run pytest
 
-  deploy:
+  # In its own job: the admin connection is never in the job that builds the image
+  migrate:
     needs: test
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      id-token: write # GitHub OIDC token, exchanged for GCP credentials
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Before setup-python, which caches the dependencies with it
+      - run: pipx install "poetry==2.4.3"
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+          cache: poetry
+      - run: poetry install --no-root
+
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      # Only in this step's environment, not in $GITHUB_ENV
+      - run: |
+          MIGRATION_DATABASE_URL=$(gcloud secrets versions access latest --secret=bobobidou-migration-database-url)
+          echo "::add-mask::$MIGRATION_DATABASE_URL"
+          export MIGRATION_DATABASE_URL
+          poetry run alembic upgrade head
+
+  deploy:
+    needs: migrate
     runs-on: ubuntu-latest
     environment: production
     permissions:

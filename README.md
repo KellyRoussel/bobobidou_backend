@@ -81,7 +81,7 @@ poetry run alembic revision --autogenerate -m "description"
 poetry run alembic check      # vérifie que la base correspond aux modèles
 ```
 
-Les migrations ne tournent pas au démarrage du conteneur : le service n'a que le rôle `bobobidou_app`, qui n'a pas le droit de modifier le schéma. Elles se lancent depuis un poste, avec la connexion admin, **avant** de déployer le code qui en a besoin. Les nouvelles tables du schéma sont accessibles au rôle grâce aux `DEFAULT PRIVILEGES` de la baseline.
+Les migrations ne tournent pas au démarrage du conteneur : le service n'a que le rôle `bobobidou_app`, qui n'a pas le droit de modifier le schéma. Le workflow de déploiement les lance avec la connexion admin à chaque push sur `main`, **avant** de déployer le nouveau code ; si elles échouent, rien n'est déployé. Pendant le déploiement, et après s'il échoue, la version précédente tourne sur la base migrée : une migration doit donc rester compatible avec elle. Pour supprimer ou renommer une colonne, retirer d'abord son usage du code dans une PR, puis la colonne dans une suivante. Les nouvelles tables du schéma sont accessibles au rôle grâce aux `DEFAULT PRIVILEGES` de la baseline.
 
 ## Déploiement
 
